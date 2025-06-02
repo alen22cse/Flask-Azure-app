@@ -3,40 +3,51 @@ trigger:
 - main
 
 variables:
-  # App Configuration
+  # Application Configuration
   APP_NAME: 'my-flask-app'
   RESOURCE_GROUP: 'flask-app-free-rg'
   PYTHON_VERSION: '3.11'
   VM_IMAGE: 'ubuntu-latest'
   
-  # Reference variable group
-  -group: azure-creds
+  # Reference variable group (must contain all Azure credentials)
+  -group: azure-creds  # Contains:
+    # AZURE_TENANT_ID
+    # AZURE_CLIENT_ID
+    # AZURE_CLIENT_SECRET (marked as secret)
+    # AZURE_SUBSCRIPTION_ID
 
 stages:
 - stage: Validate
-  displayName: Validate Variables
+  displayName: Validate Configuration
   jobs:
   - job: Validate
     pool:
       vmImage: $(VM_IMAGE)
     steps:
     - bash: |
-        echo "##[group]Variable Dump (Debug)"
-        echo "All variables:"
-        printenv | sort
+        echo "##[group]Azure Configuration Validation"
+        echo "Tenant ID: $(AZURE_TENANT_ID)"
+        echo "Client ID: $(AZURE_CLIENT_ID)"
+        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
         echo "##[endgroup]"
         
-        if [ -z "${TENANT_ID}" ]; then
-          echo "##vso[task.logissue type=error]TENANT_ID is empty!"
+        if [ -z "$(AZURE_TENANT_ID)" ]; then
+          echo "##vso[task.logissue type=error]Missing Azure Tenant ID"
           exit 1
         fi
         
-        echo "##[section]Variable Validation Passed"
-      displayName: 'Verify Variables'
-      env:
-        TENANT_ID: $(AZURE_TENANT_ID)
-        CLIENT_ID: $(AZURE_CLIENT_ID)
-        SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+        if [ -z "$(AZURE_CLIENT_ID)" ]; then
+          echo "##vso[task.logissue type=error]Missing Azure Client ID"
+          exit 1
+        fi
+        
+        if [ -z "$(AZURE_SUBSCRIPTION_ID)" ]; then
+          echo "##vso[task.logissue type=error]Missing Azure Subscription ID"
+          exit 1
+        fi
+        
+        echo "##[section]All Azure credentials validated successfully"
+      displayName: 'Validate Azure Credentials'
 
 - stage: Build
   displayName: Build and Test
@@ -60,7 +71,7 @@ stages:
       displayName: 'Install dependencies'
 
     - script: |
-        if ls **/test_*.py 1> /dev/null 2>&1; then
+        if [ -n "$(find . -name 'test_*.py' -print -quit)" ]; then
           pytest --junitxml=test-results/pytest.xml
         else
           echo "##vso[task.logissue type=warning]No test files found"
@@ -76,7 +87,7 @@ stages:
       condition: always()
 
     - task: ArchiveFiles@2
-      displayName: 'Package artifact'
+      displayName: 'Create deployment package'
       inputs:
         rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
         includeRootFolder: false
@@ -97,37 +108,36 @@ stages:
     pool:
       vmImage: $(VM_IMAGE)
     steps:
-    - task: DownloadBuildArtifacts@0
-      inputs:
-        artifactName: 'drop'
-        downloadPath: '$(System.ArtifactsDirectory)'
+    - download: current
+      artifact: drop
 
     - bash: |
         set -e
-        echo "##[section]Deployment Variables:"
-        echo "TENANT_ID: ${TENANT_ID}"
-        echo "CLIENT_ID: ${CLIENT_ID}"
-        echo "SUBSCRIPTION_ID: ${SUBSCRIPTION_ID}"
+        echo "##[group]Azure Deployment Configuration"
+        echo "App Name: $(APP_NAME)"
+        echo "Resource Group: $(RESOURCE_GROUP)"
+        echo "Tenant ID: $(AZURE_TENANT_ID)"
+        echo "Client ID: $(AZURE_CLIENT_ID)"
+        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
+        echo "##[endgroup]"
         
         echo "##[section]Authenticating with Azure..."
         az login --service-principal \
-          -u "${CLIENT_ID}" \
-          -p "${CLIENT_SECRET}" \
-          --tenant "${TENANT_ID}"
+          -u "$(AZURE_CLIENT_ID)" \
+          -p "$CLIENT_SECRET" \
+          --tenant "$(AZURE_TENANT_ID)"
+        
+        echo "##[section]Setting active subscription..."
+        az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
         
         echo "##[section]Deploying application..."
         az webapp deployment source config-zip \
-          --resource-group "${RESOURCE_GROUP}" \
-          --name "${APP_NAME}" \
-          --src "$(System.ArtifactsDirectory)/drop/app.zip"
+          --resource-group "$(RESOURCE_GROUP)" \
+          --name "$(APP_NAME)" \
+          --src "$(Pipeline.Workspace)/drop/app.zip"
         
         echo "##[section]Deployment successful!"
-        echo "##[command]App URL: https://${APP_NAME}.azurewebsites.net"
-      displayName: 'Deploy to App Service'
+        echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
+      displayName: 'Deploy to Azure App Service'
       env:
-        CLIENT_ID: $(AZURE_CLIENT_ID)
-        CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-        TENANT_ID: $(AZURE_TENANT_ID)
-        SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
-        RESOURCE_GROUP: $(RESOURCE_GROUP)
-        APP_NAME: $(APP_NAME)
+        CLIENT_SECRET: $(AZURE_CLIENT_SECRET)  # Secret injected here
