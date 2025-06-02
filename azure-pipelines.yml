@@ -3,11 +3,18 @@ trigger:
 - main
 
 variables:
+  # App Configuration
   APP_NAME: 'my-flask-app'
   RESOURCE_GROUP: 'my-resource-group'
   PYTHON_VERSION: '3.11'
   VM_IMAGE: 'ubuntu-latest'
-  -group: azure-creds  # Contains AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+  
+  # Linked to Azure DevOps variable group
+  -group: azure-creds  # Contains:
+    # AZURE_CLIENT_ID
+    # AZURE_CLIENT_SECRET 
+    # AZURE_TENANT_ID
+    # AZURE_SUBSCRIPTION_ID
 
 stages:
 - stage: Build
@@ -30,15 +37,23 @@ stages:
         pip install gunicorn pytest
       displayName: 'Install dependencies'
 
+    # Robust test execution
     - script: |
-        pytest --junitxml=test-results/pytest.xml || ([ $? -eq 5 ] && echo "No tests found" && exit 0) || (echo "Tests failed" && exit 1)
+        if ls **/test_*.py 1> /dev/null 2>&1; then
+          echo "##[debug]Test files found, running pytest"
+          pytest --junitxml=test-results/pytest.xml
+        else
+          echo "##[warning]No test files found"
+          mkdir -p test-results
+          echo '<testsuite></testsuite>' > test-results/pytest.xml
+        fi
       displayName: 'Run tests'
 
     - task: PublishTestResults@2
       inputs:
         testResultsFiles: '**/pytest.xml'
         testRunTitle: 'Pytest Results'
-      condition: succeededOrFailed()
+      condition: always()
 
     - task: ArchiveFiles@2
       displayName: 'Package artifact'
@@ -54,7 +69,7 @@ stages:
         ArtifactName: 'drop'
 
 - stage: Deploy
-  displayName: 'Deploy to Azure'
+  displayName: Deploy to Azure
   dependsOn: Build
   condition: succeeded()
   jobs:
@@ -67,19 +82,31 @@ stages:
         artifactName: 'drop'
         downloadPath: '$(System.ArtifactsDirectory)'
 
-    # Fixed Azure CLI task - uses service principal auth without requiring ARM connection
+    # Secure deployment without service connections
     - script: |
+        set -e
+        echo "##[section]Authenticating with Azure..."
         az login --service-principal \
           -u "$(AZURE_CLIENT_ID)" \
           -p "$(AZURE_CLIENT_SECRET)" \
           --tenant "$(AZURE_TENANT_ID)"
         
+        echo "##[section]Setting subscription..."
         az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
         
+        echo "##[section]Verifying app service..."
+        az webapp show \
+          --name "$(APP_NAME)" \
+          --resource-group "$(RESOURCE_GROUP)"
+        
+        echo "##[section]Starting deployment..."
         az webapp deployment source config-zip \
           --resource-group "$(RESOURCE_GROUP)" \
           --name "$(APP_NAME)" \
           --src "$(System.ArtifactsDirectory)/drop/app.zip"
+        
+        echo "##[section]Deployment successful!"
+        echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
       displayName: 'Deploy to App Service'
       env:
         AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
