@@ -1,46 +1,46 @@
+# azure-pipelines.yml
 trigger:
 - main
-- master
 
 variables:
-  azureServiceConnection: 'alen22cse'  # Replace with your service connection name
-  appName: 'my-flask-app'                          # Must match your Azure App Service name
-  pythonVersion: '3.11'                                   # Matches App Service runtime stack
-  vmImage: 'ubuntu-latest'
-
-pool:
-  vmImage: $(vmImage)
+  # Resource Config (update these)
+  APP_NAME: 'my-flask-app'
+  RESOURCE_GROUP: 'my-resource-group'
+  PYTHON_VERSION: '3.11'
+  VM_IMAGE: 'ubuntu-latest'
+  -group: azure-creds
 
 stages:
 - stage: Build
   displayName: Build and Test
   jobs:
   - job: Build
+    pool:
+      vmImage: $(VM_IMAGE)
     steps:
-    # Python Setup (Remove Node.js steps if not needed)
-    - task: UsePythonVersion@0
-      displayName: 'Install Python'
-      inputs:
-        versionSpec: $(pythonVersion)
+    - checkout: self
 
-    # Install dependencies
+    - task: UsePythonVersion@0
+      displayName: 'Setup Python'
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
+
     - script: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install gunicorn  # Required for Azure deployment
+        pip install gunicorn pytest
       displayName: 'Install dependencies'
-      condition: exists('requirements.txt')
 
-    # Run tests (if you have pytest)
+    # Corrected test step condition
     - script: |
-        pip install pytest
         pytest --junitxml=test-results/pytest.xml
-      displayName: 'Run Python tests'
-      condition: exists('**/test_*.py')  # Only run if test files exist
+      displayName: 'Run tests'
+      condition: eq(variables['Build.SourceBranchName'], 'main')  # Only run tests on main branch
+      # OR use file check via script:
+      # condition: and(succeeded(), eq(1, 1))  # Always run
 
-    # Archive files
     - task: ArchiveFiles@2
-      displayName: 'Create deployment package'
+      displayName: 'Package artifact'
       inputs:
         rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
         includeRootFolder: false
@@ -55,22 +55,32 @@ stages:
 - stage: Deploy
   displayName: Deploy to Azure
   dependsOn: Build
+  condition: succeeded()
   jobs:
   - job: Deploy
+    pool:
+      vmImage: $(VM_IMAGE)
     steps:
     - task: DownloadBuildArtifacts@0
       inputs:
-        buildType: 'current'
-        downloadType: 'single'
         artifactName: 'drop'
         downloadPath: '$(System.ArtifactsDirectory)'
 
-    - task: AzureWebApp@1
-      displayName: 'Deploy Flask app'
+    - task: AzureCLI@2
+      displayName: 'Deploy (Client Secret)'
       inputs:
-        azureSubscription: $(azureServiceConnection)
-        appType: 'webAppLinux'
-        appName: $(appName)
-        runtimeStack: 'PYTHON|$(pythonVersion)'  # Critical for Python apps
-        startupCommand: 'gunicorn --bind=0.0.0.0:8000 app:app'  # Adjust if your Flask instance isn't named 'app'
-        package: '$(System.ArtifactsDirectory)/drop/app.zip'
+        azureSubscription: ''
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az login --service-principal \
+            -u "$(AZURE_CLIENT_ID)" \
+            -p "$(AZURE_CLIENT_SECRET)" \
+            --tenant "$(AZURE_TENANT_ID)"
+          
+          az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
+          
+          az webapp deployment source config-zip \
+            --resource-group "$(RESOURCE_GROUP)" \
+            --name "$(APP_NAME)" \
+            --src "$(System.ArtifactsDirectory)/drop/app.zip"
