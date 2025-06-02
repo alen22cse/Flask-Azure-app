@@ -3,7 +3,6 @@ trigger:
 - main
 
 variables:
-  # Resource Config (update these)
   APP_NAME: 'my-flask-app'
   RESOURCE_GROUP: 'my-resource-group'
   PYTHON_VERSION: '3.11'
@@ -31,13 +30,19 @@ stages:
         pip install gunicorn pytest
       displayName: 'Install dependencies'
 
-    # Corrected test step condition
+    # Improved test execution with error handling
     - script: |
-        pytest --junitxml=test-results/pytest.xml
+        # Continue if no tests found, fail only on execution errors
+        pytest --junitxml=test-results/pytest.xml || \
+        ([ $? -eq 5 ] && echo "No tests found" && exit 0) || \
+        (echo "Tests failed" && exit 1)
       displayName: 'Run tests'
-      condition: eq(variables['Build.SourceBranchName'], 'main')  # Only run tests on main branch
-      # OR use file check via script:
-      # condition: and(succeeded(), eq(1, 1))  # Always run
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFiles: '**/pytest.xml'
+        testRunTitle: 'Pytest Results'
+      condition: succeededOrFailed()
 
     - task: ArchiveFiles@2
       displayName: 'Package artifact'
@@ -53,7 +58,7 @@ stages:
         ArtifactName: 'drop'
 
 - stage: Deploy
-  displayName: Deploy to Azure
+  displayName: 'Deploy to Azure'
   dependsOn: Build
   condition: succeeded()
   jobs:
