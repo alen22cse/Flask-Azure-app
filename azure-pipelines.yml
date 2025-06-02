@@ -3,40 +3,47 @@ trigger:
 - main
 
 variables:
-  # App Configuration
+  # App Configuration (direct values)
   APP_NAME: 'my-flask-app'
   RESOURCE_GROUP: 'my-resource-group'
   PYTHON_VERSION: '3.11'
   VM_IMAGE: 'ubuntu-latest'
+
+  # Hardcoded tenant ID for testing (replace with yours)
+  AZURE_TENANT_ID: '1179f18f-155e-4233-a144-27bc24f64401'  # ← Get this from `az account show --query tenantId`
   
-  # Reference variable group
-  -group: azure-creds
+  # Reference variable group (for other secrets)
+  -group: azure-creds  # Contains AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SUBSCRIPTION_ID
 
 stages:
 - stage: Validate
-  displayName: Validate Variables
+  displayName: Validate Configuration
   jobs:
   - job: Validate
     pool:
       vmImage: $(VM_IMAGE)
     steps:
     - bash: |
-        echo "##[group]Variable Dump (Debug)"
-        echo "All variables:"
-        printenv | sort
+        echo "##[group]Critical Variables"
+        echo "TENANT_ID: $(AZURE_TENANT_ID)"
+        echo "CLIENT_ID: $(AZURE_CLIENT_ID)"
+        echo "SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)"
         echo "##[endgroup]"
         
-        if [ -z "${TENANT_ID}" ]; then
-          echo "##vso[task.logissue type=error]TENANT_ID is empty!"
+        if [ -z "$(AZURE_TENANT_ID)" ]; then
+          echo "##vso[task.logissue type=error]TENANT_ID is missing!"
           exit 1
         fi
         
-        echo "##[section]Variable Validation Passed"
+        if [ "$(AZURE_TENANT_ID)" == "your-actual-tenant-id-here" ]; then
+          echo "##vso[task.logissue type=error]You forgot to replace the placeholder tenant ID!"
+          exit 1
+        fi
       displayName: 'Verify Variables'
       env:
-        TENANT_ID: $(AZURE_TENANT_ID)
-        CLIENT_ID: $(AZURE_CLIENT_ID)
-        SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+        AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+        AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+        AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
 
 - stage: Build
   displayName: Build and Test
@@ -104,30 +111,28 @@ stages:
 
     - bash: |
         set -e
-        echo "##[section]Deployment Variables:"
-        echo "TENANT_ID: ${TENANT_ID}"
-        echo "CLIENT_ID: ${CLIENT_ID}"
-        echo "SUBSCRIPTION_ID: ${SUBSCRIPTION_ID}"
+        echo "##[section]Deployment Configuration:"
+        echo "TENANT_ID: $(AZURE_TENANT_ID)"
+        echo "CLIENT_ID: $(AZURE_CLIENT_ID)"
+        echo "SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)"
         
         echo "##[section]Authenticating with Azure..."
         az login --service-principal \
-          -u "${CLIENT_ID}" \
-          -p "${CLIENT_SECRET}" \
-          --tenant "${TENANT_ID}"
+          -u "$(AZURE_CLIENT_ID)" \
+          -p "$(AZURE_CLIENT_SECRET)" \
+          --tenant "$(AZURE_TENANT_ID)"
         
         echo "##[section]Deploying application..."
         az webapp deployment source config-zip \
-          --resource-group "${RESOURCE_GROUP}" \
-          --name "${APP_NAME}" \
+          --resource-group "$(RESOURCE_GROUP)" \
+          --name "$(APP_NAME)" \
           --src "$(System.ArtifactsDirectory)/drop/app.zip"
         
         echo "##[section]Deployment successful!"
-        echo "##[command]App URL: https://${APP_NAME}.azurewebsites.net"
+        echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
       displayName: 'Deploy to App Service'
       env:
-        CLIENT_ID: $(AZURE_CLIENT_ID)
-        CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-        TENANT_ID: $(AZURE_TENANT_ID)
-        SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
-        RESOURCE_GROUP: $(RESOURCE_GROUP)
-        APP_NAME: $(APP_NAME)
+        AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+        AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+        AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+        AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
