@@ -13,8 +13,35 @@ variables:
   -group: azure-creds
 
 stages:
+- stage: Validate
+  displayName: Validate Variables
+  jobs:
+  - job: Validate
+    pool:
+      vmImage: $(VM_IMAGE)
+    steps:
+    - script: |
+        echo "##[group]Variable Validation"
+        echo "TENANT_ID: $(AZURE_TENANT_ID)"
+        echo "CLIENT_ID: $(AZURE_CLIENT_ID)"
+        echo "SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)"
+        echo "RESOURCE_GROUP: $(RESOURCE_GROUP)"
+        echo "APP_NAME: $(APP_NAME)"
+        echo "##[endgroup]"
+        
+        if [ -z "$(AZURE_TENANT_ID)" ]; then
+          echo "##vso[task.logissue type=error]AZURE_TENANT_ID is empty!"
+          exit 1
+        fi
+      displayName: 'Verify Required Variables'
+      env:
+        AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+        AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+        AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+
 - stage: Build
   displayName: Build and Test
+  dependsOn: Validate
   jobs:
   - job: Build
     pool:
@@ -76,29 +103,40 @@ stages:
         artifactName: 'drop'
         downloadPath: '$(System.ArtifactsDirectory)'
 
-    # Fixed deployment with explicit variable passing
+    # Fixed deployment with absolute variable certainty
     - bash: |
         set -e
-        echo "##[debug]Using Tenant ID: ${TENANT_ID}"
-        echo "##[debug]Using Client ID: ${CLIENT_ID}"
+        echo "##[group]Environment Variables"
+        printenv | grep -E 'TENANT_ID|CLIENT_ID|SUBSCRIPTION_ID'
+        echo "##[endgroup]"
         
+        if [ -z "$TENANT_ID" ]; then
+          echo "##vso[task.logissue type=error]TENANT_ID is empty!"
+          exit 1
+        fi
+
         echo "##[section]Authenticating with Azure..."
         az login --service-principal \
-          -u "${CLIENT_ID}" \
-          -p "${CLIENT_SECRET}" \
-          --tenant "${TENANT_ID}"
+          -u "$CLIENT_ID" \
+          -p "$CLIENT_SECRET" \
+          --tenant "$TENANT_ID"
         
         echo "##[section]Setting subscription..."
-        az account set --subscription "${SUBSCRIPTION_ID}"
+        az account set --subscription "$SUBSCRIPTION_ID"
+        
+        echo "##[section]Verifying resources..."
+        az webapp show \
+          --name "$APP_NAME" \
+          --resource-group "$RESOURCE_GROUP"
         
         echo "##[section]Starting deployment..."
         az webapp deployment source config-zip \
-          --resource-group "${RESOURCE_GROUP}" \
-          --name "${APP_NAME}" \
+          --resource-group "$RESOURCE_GROUP" \
+          --name "$APP_NAME" \
           --src "$(System.ArtifactsDirectory)/drop/app.zip"
         
         echo "##[section]Deployment successful!"
-        echo "##[command]App URL: https://${APP_NAME}.azurewebsites.net"
+        echo "##[command]App URL: https://$APP_NAME.azurewebsites.net"
       displayName: 'Deploy to App Service'
       env:
         CLIENT_ID: $(AZURE_CLIENT_ID)
