@@ -1,0 +1,76 @@
+trigger:
+- main
+- master
+
+variables:
+  azureServiceConnection: 'alen22cse'  # Replace with your service connection name
+  appName: 'my-flask-app'                          # Must match your Azure App Service name
+  pythonVersion: '3.11'                                   # Matches App Service runtime stack
+  vmImage: 'ubuntu-latest'
+
+pool:
+  vmImage: $(vmImage)
+
+stages:
+- stage: Build
+  displayName: Build and Test
+  jobs:
+  - job: Build
+    steps:
+    # Python Setup (Remove Node.js steps if not needed)
+    - task: UsePythonVersion@0
+      displayName: 'Install Python'
+      inputs:
+        versionSpec: $(pythonVersion)
+
+    # Install dependencies
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install gunicorn  # Required for Azure deployment
+      displayName: 'Install dependencies'
+      condition: exists('requirements.txt')
+
+    # Run tests (if you have pytest)
+    - script: |
+        pip install pytest
+        pytest --junitxml=test-results/pytest.xml
+      displayName: 'Run Python tests'
+      condition: exists('**/test_*.py')  # Only run if test files exist
+
+    # Archive files
+    - task: ArchiveFiles@2
+      displayName: 'Create deployment package'
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/app.zip'
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+
+- stage: Deploy
+  displayName: Deploy to Azure
+  dependsOn: Build
+  jobs:
+  - job: Deploy
+    steps:
+    - task: DownloadBuildArtifacts@0
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'drop'
+        downloadPath: '$(System.ArtifactsDirectory)'
+
+    - task: AzureWebApp@1
+      displayName: 'Deploy Flask app'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        appType: 'webAppLinux'
+        appName: $(appName)
+        runtimeStack: 'PYTHON|$(pythonVersion)'  # Critical for Python apps
+        startupCommand: 'gunicorn --bind=0.0.0.0:8000 app:app'  # Adjust if your Flask instance isn't named 'app'
+        package: '$(System.ArtifactsDirectory)/drop/app.zip'
