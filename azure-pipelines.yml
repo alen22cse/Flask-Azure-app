@@ -7,7 +7,7 @@ variables:
   RESOURCE_GROUP: 'my-resource-group'
   PYTHON_VERSION: '3.11'
   VM_IMAGE: 'ubuntu-latest'
-  -group: azure-creds
+  -group: azure-creds  # Contains AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
 
 stages:
 - stage: Build
@@ -30,12 +30,8 @@ stages:
         pip install gunicorn pytest
       displayName: 'Install dependencies'
 
-    # Improved test execution with error handling
     - script: |
-        # Continue if no tests found, fail only on execution errors
-        pytest --junitxml=test-results/pytest.xml || \
-        ([ $? -eq 5 ] && echo "No tests found" && exit 0) || \
-        (echo "Tests failed" && exit 1)
+        pytest --junitxml=test-results/pytest.xml || ([ $? -eq 5 ] && echo "No tests found" && exit 0) || (echo "Tests failed" && exit 1)
       displayName: 'Run tests'
 
     - task: PublishTestResults@2
@@ -71,21 +67,22 @@ stages:
         artifactName: 'drop'
         downloadPath: '$(System.ArtifactsDirectory)'
 
-    - task: AzureCLI@2
-      displayName: 'Deploy (Client Secret)'
-      inputs:
-        azureSubscription: ''
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          az login --service-principal \
-            -u "$(AZURE_CLIENT_ID)" \
-            -p "$(AZURE_CLIENT_SECRET)" \
-            --tenant "$(AZURE_TENANT_ID)"
-          
-          az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
-          
-          az webapp deployment source config-zip \
-            --resource-group "$(RESOURCE_GROUP)" \
-            --name "$(APP_NAME)" \
-            --src "$(System.ArtifactsDirectory)/drop/app.zip"
+    # Fixed Azure CLI task - uses service principal auth without requiring ARM connection
+    - script: |
+        az login --service-principal \
+          -u "$(AZURE_CLIENT_ID)" \
+          -p "$(AZURE_CLIENT_SECRET)" \
+          --tenant "$(AZURE_TENANT_ID)"
+        
+        az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
+        
+        az webapp deployment source config-zip \
+          --resource-group "$(RESOURCE_GROUP)" \
+          --name "$(APP_NAME)" \
+          --src "$(System.ArtifactsDirectory)/drop/app.zip"
+      displayName: 'Deploy to App Service'
+      env:
+        AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+        AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+        AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+        AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
