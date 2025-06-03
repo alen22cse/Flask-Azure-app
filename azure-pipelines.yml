@@ -24,30 +24,33 @@ stages:
     pool:
       vmImage: $(VM_IMAGE)
     steps:
-    - bash: |
-        echo "##[group]Azure Configuration Validation"
-        echo "Tenant ID: $(AZURE_TENANT_ID)"
-        echo "Client ID: $(AZURE_CLIENT_ID)"
-        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
-        echo "##[endgroup]"
-        
-        if [ -z "$(AZURE_TENANT_ID)" ]; then
-          echo "##vso[task.logissue type=error]Missing Azure Tenant ID"
-          exit 1
-        fi
-        
-        if [ -z "$(AZURE_CLIENT_ID)" ]; then
-          echo "##vso[task.logissue type=error]Missing Azure Client ID"
-          exit 1
-        fi
-        
-        if [ -z "$(AZURE_SUBSCRIPTION_ID)" ]; then
-          echo "##vso[task.logissue type=error]Missing Azure Subscription ID"
-          exit 1
-        fi
-        
-        echo "##[section]All Azure credentials validated successfully"
-      displayName: 'Validate Azure Credentials'
+    - task: Bash@3
+      displayName: 'Verify Azure Credentials'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "##[group]Azure Credentials Validation"
+          echo "Tenant ID: $(AZURE_TENANT_ID)"
+          echo "Client ID: $(AZURE_CLIENT_ID)"
+          echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
+          echo "##[endgroup]"
+          
+          if [ -z "$(AZURE_TENANT_ID)" ]; then
+            echo "##vso[task.logissue type=error]AZURE_TENANT_ID is empty!"
+            exit 1
+          fi
+          
+          if [ -z "$(AZURE_CLIENT_ID)" ]; then
+            echo "##vso[task.logissue type=error]AZURE_CLIENT_ID is empty!"
+            exit 1
+          fi
+          
+          if [ -z "$(AZURE_SUBSCRIPTION_ID)" ]; then
+            echo "##vso[task.logissue type=error]AZURE_SUBSCRIPTION_ID is empty!"
+            exit 1
+          fi
+          
+          echo "##[section]All credentials validated successfully"
 
 - stage: Build
   displayName: Build and Test
@@ -111,33 +114,45 @@ stages:
     - download: current
       artifact: drop
 
-    - bash: |
-        set -e
-        echo "##[group]Azure Deployment Configuration"
-        echo "App Name: $(APP_NAME)"
-        echo "Resource Group: $(RESOURCE_GROUP)"
-        echo "Tenant ID: $(AZURE_TENANT_ID)"
-        echo "Client ID: $(AZURE_CLIENT_ID)"
-        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
-        echo "##[endgroup]"
-        
-        echo "##[section]Authenticating with Azure..."
-        az login --service-principal \
-          -u "$(AZURE_CLIENT_ID)" \
-          -p "$CLIENT_SECRET" \
-          --tenant "$(AZURE_TENANT_ID)"
-        
-        echo "##[section]Setting active subscription..."
-        az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
-        
-        echo "##[section]Deploying application..."
-        az webapp deployment source config-zip \
-          --resource-group "$(RESOURCE_GROUP)" \
-          --name "$(APP_NAME)" \
-          --src "$(Pipeline.Workspace)/drop/app.zip"
-        
-        echo "##[section]Deployment successful!"
-        echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
-      displayName: 'Deploy to Azure App Service'
+    - task: Bash@3
+      displayName: 'Deploy to App Service'
+      inputs:
+        targetType: 'inline'
+        script: |
+          set -e
+          echo "##[group]Azure Deployment Configuration"
+          echo "App Name: $(APP_NAME)"
+          echo "Resource Group: $(RESOURCE_GROUP)"
+          echo "Tenant ID: $(AZURE_TENANT_ID)"
+          echo "Client ID: $(AZURE_CLIENT_ID)"
+          echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
+          echo "##[endgroup]"
+          
+          echo "##[section]Authenticating with Azure..."
+          az login --service-principal \
+            -u "$(AZURE_CLIENT_ID)" \
+            -p "$CLIENT_SECRET" \
+            --tenant "$(AZURE_TENANT_ID)" || {
+              echo "##vso[task.logissue type=error]Azure authentication failed"
+              exit 1
+            }
+          
+          echo "##[section]Setting active subscription..."
+          az account set --subscription "$(AZURE_SUBSCRIPTION_ID)" || {
+            echo "##vso[task.logissue type=error]Failed to set subscription"
+            exit 1
+          }
+          
+          echo "##[section]Deploying application..."
+          az webapp deployment source config-zip \
+            --resource-group "$(RESOURCE_GROUP)" \
+            --name "$(APP_NAME)" \
+            --src "$(Pipeline.Workspace)/drop/app.zip" || {
+              echo "##vso[task.logissue type=error]Deployment failed"
+              exit 1
+            }
+          
+          echo "##[section]Deployment successful!"
+          echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
       env:
         CLIENT_SECRET: $(AZURE_CLIENT_SECRET)  # Secret injected here
