@@ -3,54 +3,52 @@ trigger:
 - main
 
 variables:
-  # Application Configuration
-  APP_NAME: 'my-flask-app'
-  RESOURCE_GROUP: 'flask-app-free-rg'
+  # Hardcoded configuration (REPLACE THESE VALUES)
+  AZURE_TENANT_ID: '1179f18f-155e-4233-a144-27bc24f64401'  # From 'az account show'
+  APP_NAME: 'my-flask-app'                                 # Must match Azure App Service
+  RESOURCE_GROUP: 'flask-app-free-rg'                      # Existing resource group
   PYTHON_VERSION: '3.11'
   VM_IMAGE: 'ubuntu-latest'
   
-  # Reference variable group (must contain all Azure credentials)
-  -group: azure-creds  # Contains:
-    # AZURE_TENANT_ID
+  # Reference variable group (create in Pipelines → Library)
+  -group: azure-creds  # Must contain:
     # AZURE_CLIENT_ID
-    # AZURE_CLIENT_SECRET (marked as secret)
+    # AZURE_CLIENT_SECRET
     # AZURE_SUBSCRIPTION_ID
 
 stages:
 - stage: Validate
-  displayName: Validate Configuration
+  displayName: Validate Setup
   jobs:
   - job: Validate
     pool:
       vmImage: $(VM_IMAGE)
     steps:
-    - task: Bash@3
+    - bash: |
+        echo "##[group]Azure Configuration"
+        echo "Tenant ID: $(AZURE_TENANT_ID)"
+        echo "Client ID: $(AZURE_CLIENT_ID)"
+        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
+        echo "##[endgroup]"
+        
+        # Verify all required variables exist
+        if [ -z "$(AZURE_TENANT_ID)" ]; then
+          echo "##vso[task.logissue type=error]AZURE_TENANT_ID is empty!"
+          exit 1
+        fi
+        
+        if [ -z "$(AZURE_CLIENT_ID)" ]; then
+          echo "##vso[task.logissue type=error]AZURE_CLIENT_ID is empty!"
+          exit 1
+        fi
+        
+        if [ -z "$(AZURE_SUBSCRIPTION_ID)" ]; then
+          echo "##vso[task.logissue type=error]AZURE_SUBSCRIPTION_ID is empty!"
+          exit 1
+        fi
+        
+        echo "##[section]All variables validated successfully"
       displayName: 'Verify Azure Credentials'
-      inputs:
-        targetType: 'inline'
-        script: |
-          echo "##[group]Azure Credentials Validation"
-          echo "Tenant ID: $(AZURE_TENANT_ID)"
-          echo "Client ID: $(AZURE_CLIENT_ID)"
-          echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
-          echo "##[endgroup]"
-          
-          if [ -z "$(AZURE_TENANT_ID)" ]; then
-            echo "##vso[task.logissue type=error]AZURE_TENANT_ID is empty!"
-            exit 1
-          fi
-          
-          if [ -z "$(AZURE_CLIENT_ID)" ]; then
-            echo "##vso[task.logissue type=error]AZURE_CLIENT_ID is empty!"
-            exit 1
-          fi
-          
-          if [ -z "$(AZURE_SUBSCRIPTION_ID)" ]; then
-            echo "##vso[task.logissue type=error]AZURE_SUBSCRIPTION_ID is empty!"
-            exit 1
-          fi
-          
-          echo "##[section]All credentials validated successfully"
 
 - stage: Build
   displayName: Build and Test
@@ -74,7 +72,7 @@ stages:
       displayName: 'Install dependencies'
 
     - script: |
-        if [ -n "$(find . -name 'test_*.py' -print -quit)" ]; then
+        if ls **/test_*.py 1> /dev/null 2>&1; then
           pytest --junitxml=test-results/pytest.xml
         else
           echo "##vso[task.logissue type=warning]No test files found"
@@ -111,48 +109,42 @@ stages:
     pool:
       vmImage: $(VM_IMAGE)
     steps:
-    - download: current
+    - download: current  # New recommended download method
       artifact: drop
 
-    - task: Bash@3
-      displayName: 'Deploy to App Service'
-      inputs:
-        targetType: 'inline'
-        script: |
-          set -e
-          echo "##[group]Azure Deployment Configuration"
-          echo "App Name: $(APP_NAME)"
-          echo "Resource Group: $(RESOURCE_GROUP)"
-          echo "Tenant ID: $(AZURE_TENANT_ID)"
-          echo "Client ID: $(AZURE_CLIENT_ID)"
-          echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
-          echo "##[endgroup]"
-          
-          echo "##[section]Authenticating with Azure..."
-          az login --service-principal \
-            -u "$(AZURE_CLIENT_ID)" \
-            -p "$CLIENT_SECRET" \
-            --tenant "$(AZURE_TENANT_ID)" || {
-              echo "##vso[task.logissue type=error]Azure authentication failed"
-              exit 1
-            }
-          
-          echo "##[section]Setting active subscription..."
-          az account set --subscription "$(AZURE_SUBSCRIPTION_ID)" || {
-            echo "##vso[task.logissue type=error]Failed to set subscription"
+    - bash: |
+        set -e
+        echo "##[group]Deployment Configuration"
+        echo "Tenant ID: $(AZURE_TENANT_ID)"
+        echo "Client ID: $(AZURE_CLIENT_ID)"
+        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
+        echo "Resource Group: $(RESOURCE_GROUP)"
+        echo "App Name: $(APP_NAME)"
+        echo "##[endgroup]"
+        
+        echo "##[section]Authenticating with Azure..."
+        az login --service-principal \
+          -u "$(AZURE_CLIENT_ID)" \
+          -p "$CLIENT_SECRET" \
+          --tenant "$(AZURE_TENANT_ID)" || {
+            echo "##vso[task.logissue type=error]Azure authentication failed"
             exit 1
           }
-          
-          echo "##[section]Deploying application..."
-          az webapp deployment source config-zip \
-            --resource-group "$(RESOURCE_GROUP)" \
-            --name "$(APP_NAME)" \
-            --src "$(Pipeline.Workspace)/drop/app.zip" || {
-              echo "##vso[task.logissue type=error]Deployment failed"
-              exit 1
-            }
-          
-          echo "##[section]Deployment successful!"
-          echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
+        
+        echo "##[section]Setting subscription..."
+        az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
+        
+        echo "##[section]Deploying application..."
+        az webapp deployment source config-zip \
+          --resource-group "$(RESOURCE_GROUP)" \
+          --name "$(APP_NAME)" \
+          --src "$(Pipeline.Workspace)/drop/app.zip" || {
+            echo "##vso[task.logissue type=error]Deployment failed"
+            exit 1
+          }
+        
+        echo "##[section]Deployment successful!"
+        echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
+      displayName: 'Deploy to App Service'
       env:
-        CLIENT_SECRET: $(AZURE_CLIENT_SECRET)  # Secret injected here
+        CLIENT_SECRET: $(AZURE_CLIENT_SECRET)  # Only secret needs env mapping
