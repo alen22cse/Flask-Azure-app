@@ -3,76 +3,46 @@ trigger:
 - main
 
 variables:
-  # Hardcoded configuration (REPLACE THESE VALUES)
+  # Configuration (replace with your values)
   AZURE_TENANT_ID: '1179f18f-155e-4233-a144-27bc24f64401'  # From 'az account show'
-  APP_NAME: 'my-flask-app'                                 # Must match Azure App Service
-  RESOURCE_GROUP: 'flask-app-free-rg'                      # Existing resource group
+  APP_NAME: 'my-flask-app'                                  # Must match Azure App Service name
+  RESOURCE_GROUP: 'my-resource-group'                       # Existing resource group
   PYTHON_VERSION: '3.11'
   VM_IMAGE: 'ubuntu-latest'
   
-  # Reference variable group (create in Pipelines → Library)
-  -group: azure-creds  # Must contain:
+
+# Reference variable group (create in Pipelines → Library)
+  -group: azure-creds  # Contains:
     # AZURE_CLIENT_ID
     # AZURE_CLIENT_SECRET
     # AZURE_SUBSCRIPTION_ID
 
 stages:
-- stage: Validate
-  displayName: Validate Setup
-  jobs:
-  - job: Validate
-    pool:
-      vmImage: $(VM_IMAGE)
-    steps:
-    - bash: |
-        echo "##[group]Azure Configuration"
-        echo "Tenant ID: $(AZURE_TENANT_ID)"
-        echo "Client ID: $(AZURE_CLIENT_ID)"
-        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
-        echo "##[endgroup]"
-        
-        # Verify all required variables exist
-        if [ -z "$(AZURE_TENANT_ID)" ]; then
-          echo "##vso[task.logissue type=error]AZURE_TENANT_ID is empty!"
-          exit 1
-        fi
-        
-        if [ -z "$(AZURE_CLIENT_ID)" ]; then
-          echo "##vso[task.logissue type=error]AZURE_CLIENT_ID is empty!"
-          exit 1
-        fi
-        
-        if [ -z "$(AZURE_SUBSCRIPTION_ID)" ]; then
-          echo "##vso[task.logissue type=error]AZURE_SUBSCRIPTION_ID is empty!"
-          exit 1
-        fi
-        
-        echo "##[section]All variables validated successfully"
-      displayName: 'Verify Azure Credentials'
-
 - stage: Build
   displayName: Build and Test
-  dependsOn: Validate
   jobs:
   - job: Build
     pool:
       vmImage: $(VM_IMAGE)
     steps:
-    - checkout: self
+    - checkout: self  # Checks out your repository code
 
+    # Python environment setup
     - task: UsePythonVersion@0
-      displayName: 'Setup Python'
+      displayName: 'Set up Python'
       inputs:
         versionSpec: $(PYTHON_VERSION)
 
+    # Install dependencies
     - script: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install gunicorn pytest
       displayName: 'Install dependencies'
 
+    # Run tests (if any exist)
     - script: |
-        if ls **/test_*.py 1> /dev/null 2>&1; then
+        if [ -n "$(ls -A **/test_*.py 2>/dev/null)" ]; then
           pytest --junitxml=test-results/pytest.xml
         else
           echo "##vso[task.logissue type=warning]No test files found"
@@ -81,20 +51,23 @@ stages:
         fi
       displayName: 'Run tests'
 
+    # Publish test results
     - task: PublishTestResults@2
       inputs:
         testResultsFiles: '**/pytest.xml'
         testRunTitle: 'Pytest Results'
       condition: always()
 
+    # Create deployment package
     - task: ArchiveFiles@2
-      displayName: 'Create deployment package'
+      displayName: 'Create ZIP package'
       inputs:
         rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
         includeRootFolder: false
         archiveType: 'zip'
         archiveFile: '$(Build.ArtifactStagingDirectory)/app.zip'
 
+    # Publish artifact
     - task: PublishBuildArtifacts@1
       inputs:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)'
@@ -109,42 +82,35 @@ stages:
     pool:
       vmImage: $(VM_IMAGE)
     steps:
-    - download: current  # New recommended download method
+    # Download the built artifact
+    - download: current
       artifact: drop
 
-    - bash: |
-        set -e
-        echo "##[group]Deployment Configuration"
-        echo "Tenant ID: $(AZURE_TENANT_ID)"
-        echo "Client ID: $(AZURE_CLIENT_ID)"
-        echo "Subscription ID: $(AZURE_SUBSCRIPTION_ID)"
-        echo "Resource Group: $(RESOURCE_GROUP)"
-        echo "App Name: $(APP_NAME)"
-        echo "##[endgroup]"
-        
-        echo "##[section]Authenticating with Azure..."
-        az login --service-principal \
-          -u "$(AZURE_CLIENT_ID)" \
-          -p "$CLIENT_SECRET" \
-          --tenant "$(AZURE_TENANT_ID)" || {
-            echo "##vso[task.logissue type=error]Azure authentication failed"
+    # Azure deployment
+    - task: Bash@3
+      displayName: 'Deploy to App Service'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "##[section]Authenticating with Azure..."
+          az login --service-principal \
+            -u "$(AZURE_CLIENT_ID)" \
+            -p "$(AZURE_CLIENT_SECRET)" \
+            --tenant "$(AZURE_TENANT_ID)" || {
+            echo "##vso[task.logissue type=error]Azure login failed"
             exit 1
           }
-        
-        echo "##[section]Setting subscription..."
-        az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
-        
-        echo "##[section]Deploying application..."
-        az webapp deployment source config-zip \
-          --resource-group "$(RESOURCE_GROUP)" \
-          --name "$(APP_NAME)" \
-          --src "$(Pipeline.Workspace)/drop/app.zip" || {
+
+          echo "##[section]Deploying application..."
+          az webapp deployment source config-zip \
+            --resource-group "$(RESOURCE_GROUP)" \
+            --name "$(APP_NAME)" \
+            --src "$(Pipeline.Workspace)/drop/app.zip" || {
             echo "##vso[task.logissue type=error]Deployment failed"
             exit 1
           }
-        
-        echo "##[section]Deployment successful!"
-        echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
-      displayName: 'Deploy to App Service'
+
+          echo "##[section]Deployment successful!"
+          echo "##[command]App URL: https://$(APP_NAME).azurewebsites.net"
       env:
-        CLIENT_SECRET: $(AZURE_CLIENT_SECRET)  # Only secret needs env mapping
+        AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)  # Only secret needs env mapping
